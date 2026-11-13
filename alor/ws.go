@@ -171,6 +171,21 @@ func (w *WS) OnReconnect(handler func()) {
 	w.c.ws.setReconnectHandler(handler)
 }
 
+/**
+ * EnsureConnected поднимает /ws сразу (без ожидания первой подписки).
+ * Нужно для readiness/метрик Connected в серверах-прокси.
+ */
+func (w *WS) EnsureConnected() {
+	w.c.ws.ensureConnected()
+}
+
+/**
+ * SetKeepAlive удерживает /ws даже без активных подписок.
+ */
+func (w *WS) SetKeepAlive(keep bool) {
+	w.c.ws.setKeepAlive(keep)
+}
+
 // WSStatusHandler — статус подписки (ack / ошибка).
 type WSStatusHandler func(guid string, httpCode int, message string)
 
@@ -188,6 +203,7 @@ type wsConn struct {
 	subscriptions     map[string]*wsSubscription
 	dialing           bool
 	closed            bool
+	keepAlive         bool
 	statusHandlers    []WSStatusHandler
 	connectionHandler func(connected bool)
 	reconnectHandler  func()
@@ -298,6 +314,23 @@ func (w *wsConn) setReconnectHandler(handler func()) {
 	w.mu.Unlock()
 }
 
+func (w *wsConn) setKeepAlive(keep bool) {
+	w.mu.Lock()
+	w.keepAlive = keep
+	w.mu.Unlock()
+}
+
+func (w *wsConn) ensureConnected() {
+	w.mu.Lock()
+	w.keepAlive = true
+	if w.conn != nil || w.dialing || w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	go w.ensureLoop()
+}
+
 func (w *wsConn) notifyConnection(connected bool) {
 	w.mu.Lock()
 	handler := w.connectionHandler
@@ -314,7 +347,7 @@ func (w *wsConn) forceReconnect() {
 	w.mu.Lock()
 	conn := w.conn
 	w.conn = nil
-	needDial := !w.dialing && !w.closed && len(w.subscriptions) > 0
+	needDial := !w.dialing && !w.closed && (len(w.subscriptions) > 0 || w.keepAlive)
 	w.mu.Unlock()
 	if conn != nil {
 		_ = conn.Close()
@@ -343,9 +376,10 @@ func (w *wsConn) ensureLoop() {
 		}
 		w.mu.Lock()
 		empty := len(w.subscriptions) == 0
+		keepAlive := w.keepAlive
 		closed := w.closed
 		w.mu.Unlock()
-		if closed || empty {
+		if closed || (empty && !keepAlive) {
 			w.mu.Lock()
 			w.dialing = false
 			w.mu.Unlock()
