@@ -43,6 +43,32 @@ func (c *Client) EnsureAccessToken(ctx context.Context) (string, error) {
 }
 
 /**
+ * Refresh принудительно обновляет JWT через refresh-токен.
+ */
+func (c *Client) Refresh(ctx context.Context) error {
+	c.tokenMu.Lock()
+	c.access = ""
+	c.accessExp = time.Time{}
+	c.tokenMu.Unlock()
+	_, err := c.refreshAccessToken(ctx)
+	return err
+}
+
+/**
+ * SetWSURL переопределяет URL WebSocket подписок (/ws).
+ */
+func (c *Client) SetWSURL(wsURL string) {
+	if c == nil {
+		return
+	}
+	wsURL = strings.TrimSpace(wsURL)
+	if wsURL == "" {
+		return
+	}
+	c.cfg.WSURL = wsURL
+}
+
+/**
  * TokenInfo возвращает текущий access-токен и метаданные (без принудительного refresh).
  */
 func (c *Client) TokenInfo() TokenInfo {

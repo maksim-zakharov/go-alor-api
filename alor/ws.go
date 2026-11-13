@@ -142,6 +142,24 @@ func (w *WS) SubscriptionCount() int {
 	return w.c.ws.subscriptionCount()
 }
 
+/**
+ * Reconnect принудительно закрывает текущее /ws соединение.
+ * Подписки сохраняются и будут восстановлены ensureLoop (нужно при «живом» сокете без данных).
+ */
+func (w *WS) Reconnect() {
+	w.c.ws.forceReconnect()
+}
+
+/**
+ * OnStatus задаёт колбэк ack/ошибок подписки (httpCode из ответа Alor).
+ */
+func (w *WS) OnStatus(handler WSStatusHandler) {
+	w.c.ws.setStatusHandler(handler)
+}
+
+// WSStatusHandler — статус подписки (ack / ошибка).
+type WSStatusHandler func(guid string, httpCode int, message string)
+
 type wsSubscription struct {
 	command map[string]any
 	handler DataHandler
@@ -150,12 +168,13 @@ type wsSubscription struct {
 type wsConn struct {
 	client *Client
 
-	mu            sync.Mutex
-	conn          *websocket.Conn
-	writeMu       sync.Mutex
-	subscriptions map[string]*wsSubscription
-	dialing       bool
-	closed        bool
+	mu             sync.Mutex
+	conn           *websocket.Conn
+	writeMu        sync.Mutex
+	subscriptions  map[string]*wsSubscription
+	dialing        bool
+	closed         bool
+	statusHandlers []WSStatusHandler
 }
 
 func newWSConn(c *Client) *wsConn {
@@ -238,6 +257,32 @@ func (w *wsConn) close() {
 	w.mu.Unlock()
 	if conn != nil {
 		_ = conn.Close()
+	}
+}
+
+func (w *wsConn) setStatusHandler(handler WSStatusHandler) {
+	if handler == nil {
+		return
+	}
+	w.mu.Lock()
+	w.statusHandlers = append(w.statusHandlers, handler)
+	w.mu.Unlock()
+}
+
+/**
+ * forceReconnect рвёт текущий dial, подписки остаются — ensureLoop переподключит.
+ */
+func (w *wsConn) forceReconnect() {
+	w.mu.Lock()
+	conn := w.conn
+	w.conn = nil
+	needDial := !w.dialing && !w.closed && len(w.subscriptions) > 0
+	w.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if needDial {
+		go w.ensureLoop()
 	}
 }
 
@@ -342,13 +387,23 @@ func (w *wsConn) dispatch(raw []byte) {
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return
 	}
-	if msg.HTTPCode != 0 && msg.HTTPCode >= 400 {
-		// ошибка подписки — можно пробросить через handler с пустым data; пока игнор
-		return
-	}
 	guid := msg.GUID
 	if guid == "" {
 		guid = msg.RequestGUID
+	}
+	if msg.HTTPCode != 0 {
+		w.mu.Lock()
+		handlers := append([]WSStatusHandler(nil), w.statusHandlers...)
+		w.mu.Unlock()
+		for _, status := range handlers {
+			status(guid, msg.HTTPCode, msg.Message)
+		}
+		if msg.HTTPCode >= 400 {
+			return
+		}
+		if len(msg.Data) == 0 {
+			return
+		}
 	}
 	w.mu.Lock()
 	sub := w.subscriptions[guid]
@@ -357,9 +412,8 @@ func (w *wsConn) dispatch(raw []byte) {
 		return
 	}
 	payload := msg.Data
-	if payload == nil {
-		// иногда data на верхнем уровне без обёртки — отдаём весь raw
-		payload = json.RawMessage(raw)
+	if len(payload) == 0 {
+		return
 	}
 	sub.handler(guid, payload)
 }
