@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.*
+*.pem
+
+# Scratch
+_parse_openapi.py
