@@ -1,6 +1,9 @@
 package alor
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Environment — контур Alor OpenAPI.
 type Environment string
@@ -106,6 +109,13 @@ type Config struct {
 	WSReconnectMax time.Duration
 	// EnableCompression включать permessage-deflate на /ws (нужно для depth>20).
 	EnableCompression *bool
+	// AllowInsecureTLS отключает проверку TLS (только для отладки / совместимость ITS).
+	AllowInsecureTLS bool
+	/**
+	 * AccessTokenFunc внешний источник JWT (общий TokenProvider на несколько клиентов).
+	 * Если задан — встроенный refresh не используется.
+	 */
+	AccessTokenFunc func(ctx context.Context) (string, error)
 }
 
 // Resolve заполняет URL по Environment и значения по умолчанию.

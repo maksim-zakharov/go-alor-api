@@ -2,6 +2,7 @@ package alor
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"sync"
 	"time"
@@ -47,9 +48,15 @@ func WithHTTPClient(h *http.Client) Option {
  */
 func New(cfg Config, opts ...Option) *Client {
 	cfg = cfg.Resolve()
+	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
+	if cfg.AllowInsecureTLS {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true} //nolint:gosec
+		httpClient.Transport = transport
+	}
 	c := &Client{
 		cfg:     cfg,
-		http:    &http.Client{Timeout: cfg.HTTPTimeout},
+		http:    httpClient,
 		limiter: rate.NewLimiter(rate.Limit(cfg.RestRPS), cfg.RestBurst),
 		closed:  make(chan struct{}),
 	}

@@ -94,6 +94,9 @@ func (c *Client) Portfolios(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) accessToken(ctx context.Context) (string, error) {
+	if c.cfg.AccessTokenFunc != nil {
+		return c.cfg.AccessTokenFunc(ctx)
+	}
 	c.tokenMu.RLock()
 	token := c.access
 	exp := c.accessExp
@@ -102,6 +105,16 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 		return token, nil
 	}
 	return c.refreshAccessToken(ctx)
+}
+
+/**
+ * SetAccessTokenFunc задаёт внешний источник JWT (вызывать до активных запросов/WS).
+ */
+func (c *Client) SetAccessTokenFunc(fn func(ctx context.Context) (string, error)) {
+	if c == nil {
+		return
+	}
+	c.cfg.AccessTokenFunc = fn
 }
 
 func (c *Client) refreshAccessToken(ctx context.Context) (string, error) {

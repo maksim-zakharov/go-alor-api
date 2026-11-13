@@ -157,6 +157,20 @@ func (w *WS) OnStatus(handler WSStatusHandler) {
 	w.c.ws.setStatusHandler(handler)
 }
 
+/**
+ * OnConnectionChange колбэк при установке/потере /ws (true = connected).
+ */
+func (w *WS) OnConnectionChange(handler func(connected bool)) {
+	w.c.ws.setConnectionHandler(handler)
+}
+
+/**
+ * OnReconnect колбэк после успешного dial, если это не первое соединение.
+ */
+func (w *WS) OnReconnect(handler func()) {
+	w.c.ws.setReconnectHandler(handler)
+}
+
 // WSStatusHandler — статус подписки (ack / ошибка).
 type WSStatusHandler func(guid string, httpCode int, message string)
 
@@ -168,13 +182,16 @@ type wsSubscription struct {
 type wsConn struct {
 	client *Client
 
-	mu             sync.Mutex
-	conn           *websocket.Conn
-	writeMu        sync.Mutex
-	subscriptions  map[string]*wsSubscription
-	dialing        bool
-	closed         bool
-	statusHandlers []WSStatusHandler
+	mu                sync.Mutex
+	conn              *websocket.Conn
+	writeMu           sync.Mutex
+	subscriptions     map[string]*wsSubscription
+	dialing           bool
+	closed            bool
+	statusHandlers    []WSStatusHandler
+	connectionHandler func(connected bool)
+	reconnectHandler  func()
+	successfulDials   int
 }
 
 func newWSConn(c *Client) *wsConn {
@@ -269,6 +286,27 @@ func (w *wsConn) setStatusHandler(handler WSStatusHandler) {
 	w.mu.Unlock()
 }
 
+func (w *wsConn) setConnectionHandler(handler func(connected bool)) {
+	w.mu.Lock()
+	w.connectionHandler = handler
+	w.mu.Unlock()
+}
+
+func (w *wsConn) setReconnectHandler(handler func()) {
+	w.mu.Lock()
+	w.reconnectHandler = handler
+	w.mu.Unlock()
+}
+
+func (w *wsConn) notifyConnection(connected bool) {
+	w.mu.Lock()
+	handler := w.connectionHandler
+	w.mu.Unlock()
+	if handler != nil {
+		handler(connected)
+	}
+}
+
 /**
  * forceReconnect рвёт текущий dial, подписки остаются — ensureLoop переподключит.
  */
@@ -352,11 +390,18 @@ func (w *wsConn) connectAndRead() error {
 
 	w.mu.Lock()
 	w.conn = conn
+	w.successfulDials++
+	dials := w.successfulDials
+	reconnectHandler := w.reconnectHandler
 	subs := make([]*wsSubscription, 0, len(w.subscriptions))
 	for _, s := range w.subscriptions {
 		subs = append(subs, s)
 	}
 	w.mu.Unlock()
+	w.notifyConnection(true)
+	if dials > 1 && reconnectHandler != nil {
+		reconnectHandler()
+	}
 
 	// resubscribe
 	for _, s := range subs {
@@ -371,6 +416,7 @@ func (w *wsConn) connectAndRead() error {
 		}
 		w.mu.Unlock()
 		_ = conn.Close()
+		w.notifyConnection(false)
 	}()
 
 	for {
